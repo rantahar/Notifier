@@ -2,6 +2,7 @@ package com.example.notifier
 
 import android.Manifest
 import android.app.AlarmManager
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -14,7 +15,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
@@ -24,8 +28,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.example.notifier.ui.theme.NotifierTheme
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -39,7 +46,18 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             NotifierTheme {
-                MainScreen(clickCount = clickCount)
+                MainScreen(
+                    clickCount = clickCount,
+                    onIncrement = {
+                        // Immediately cancel the currently showing notification
+                        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        notificationManager.cancel(NOTIFICATION_ID)
+                        // Then update the count and schedule the next one
+                        manualUpdateCount(1)
+                        scheduleNextNotification(this)
+                    },
+                    onDecrement = { manualUpdateCount(-1) }
+                )
             }
         }
     }
@@ -48,12 +66,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         if (intent.action == NOTIFICATION_CLICK_ACTION) {
             updateDailyClickCount()
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
-                // The MainScreen will handle showing the rationale when the app is resumed
-            } else {
-                scheduleNextNotification(this)
-            }
+            scheduleNextNotification(this)
         }
     }
 
@@ -73,6 +86,25 @@ class MainActivity : ComponentActivity() {
         } else {
             0
         }
+    }
+
+    private fun manualUpdateCount(delta: Int) {
+        val prefs = getSharedPreferences("NotifierPrefs", Context.MODE_PRIVATE)
+        val editor = prefs.edit()
+
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        val today = dateFormat.format(Date())
+
+        val lastClickDate = prefs.getString("lastClickDate", null)
+        if (today != lastClickDate) {
+            editor.putString("lastClickDate", today)
+        }
+
+        val currentClickCount = prefs.getInt("clickCount", 0)
+        val newCount = (currentClickCount + delta).coerceAtLeast(0)
+        editor.putInt("clickCount", newCount)
+        editor.apply()
+        updateClickCount()
     }
 
     private fun updateDailyClickCount() {
@@ -99,104 +131,86 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MainScreen(clickCount: Int) {
+fun MainScreen(
+    clickCount: Int,
+    onIncrement: () -> Unit,
+    onDecrement: () -> Unit
+) {
     val context = LocalContext.current
     var showAlarmPermissionRationale by remember { mutableStateOf(false) }
     var showBatteryOptimizationRationale by remember { mutableStateOf(false) }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
-        onResult = { isGranted ->
-            if (isGranted) {
-                // The LaunchedEffect will re-run on the next composition
-            }
-        }
+        onResult = { /* The new DisposableEffect will handle re-checking on resume */ }
     )
-
-    // This effect runs on first launch and whenever the app is resumed
-    LaunchedEffect(Unit) {
-        // 1. Check for notification permission (Android 13+)
+    
+    fun checkPermissions() {
+        // 1. Notification Permission (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val hasNotificationPermission = ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-
-            if (!hasNotificationPermission) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                return@LaunchedEffect // Wait for user's response
+                return
             }
         }
 
-        // 2. Check for exact alarm permission (Android 12+)
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        // 2. Exact Alarm Permission (Android 12+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             if (!alarmManager.canScheduleExactAlarms()) {
                 showAlarmPermissionRationale = true
-                return@LaunchedEffect // Show rationale and wait for user to act
+                return
             }
         }
 
-        // 3. Check for battery optimization
+        // 3. Battery Optimization
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         if (!powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
             showBatteryOptimizationRationale = true
-            return@LaunchedEffect // Show rationale and wait for user to act
+            return
         }
+    }
 
-        // 4. If all permissions are granted, schedule the first notification
-        scheduleNextNotification(context)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                checkPermissions()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     if (showAlarmPermissionRationale) {
-        AlertDialog(
-            onDismissRequest = { showAlarmPermissionRationale = false },
-            title = { Text("Permission Required") },
-            text = { Text("To ensure timely reminders, this app needs permission to schedule alarms. Please grant this permission in the upcoming settings screen.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showAlarmPermissionRationale = false
-                        val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                            data = Uri.fromParts("package", context.packageName, null)
-                        }
-                        context.startActivity(intent)
-                    }
-                ) {
-                    Text("Go to Settings")
+        PermissionRationaleDialog(
+            title = "Permission Required",
+            text = "To ensure timely reminders, this app needs permission to schedule alarms. Please grant this permission in the upcoming settings screen.",
+            onConfirm = {
+                showAlarmPermissionRationale = false
+                val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
                 }
+                context.startActivity(intent)
             },
-            dismissButton = {
-                Button(onClick = { showAlarmPermissionRationale = false }) {
-                    Text("Cancel")
-                }
-            }
+            onDismiss = { showAlarmPermissionRationale = false }
         )
     }
 
     if (showBatteryOptimizationRationale) {
-        AlertDialog(
-            onDismissRequest = { showBatteryOptimizationRationale = false },
-            title = { Text("Battery Optimization") },
-            text = { Text("To ensure the reminders work reliably, please set battery usage to \"Unrestricted\" for this app in the next screen.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showBatteryOptimizationRationale = false
-                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                            data = Uri.fromParts("package", context.packageName, null)
-                        }
-                        context.startActivity(intent)
-                    }
-                ) {
-                    Text("Go to Settings")
+        PermissionRationaleDialog(
+            title = "Battery Optimization",
+            text = "To ensure the reminders work reliably, please set battery usage to \"Unrestricted\" for this app in the next screen.",
+            onConfirm = {
+                showBatteryOptimizationRationale = false
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
                 }
+                context.startActivity(intent)
             },
-            dismissButton = {
-                Button(onClick = { showBatteryOptimizationRationale = false }) {
-                    Text("Cancel")
-                }
-            }
+            onDismiss = { showBatteryOptimizationRationale = false }
         )
     }
 
@@ -204,11 +218,39 @@ fun MainScreen(clickCount: Int) {
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = "Daily Clicks: $clickCount",
-            modifier = Modifier
-                .align(Alignment.Center)
-                .padding(16.dp)
-        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "Daily Clicks: $clickCount",
+                modifier = Modifier.padding(16.dp)
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Button(onClick = onDecrement) { Text("-") }
+                Button(onClick = onIncrement) { Text("+") }
+            }
+        }
     }
+}
+
+@Composable
+fun PermissionRationaleDialog(
+    title: String,
+    text: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(text) },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text("Go to Settings")
+            }
+        },
+        dismissButton = {
+            Button(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
