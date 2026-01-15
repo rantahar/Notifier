@@ -1,0 +1,56 @@
+# Android Studio / IntelliJ IDEA
+*.iml
+.idea/
+.gradle
+local.properties
+
+# Build and compilation artifacts
+/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# Android specific
+*.apk
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+lint.xml
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Gradle
+.gradle/
+gradle-app.setting
+.gradletasknamecache
+
+# Security / Signing
+*.keystore
+*.jks
+*.p12
+*.pfx
+keystore.properties
+signing.properties
+
+# Test coverage
+/coverage/
+/reports/
+
+# Kotlin
+*.kt.bak
+
+# Log files
+*.log
