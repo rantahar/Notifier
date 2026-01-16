@@ -53,7 +53,7 @@ class MainActivity : ComponentActivity() {
                         habitViewModel.listenToTodaysLog()
                     }
                     MainScreen(
-                        clickCount = habitLog?.snack ?: 0,
+                        clickCount = habitLog?.habits?.snack ?: 0,
                         onIncrement = {
                             habitViewModel.incrementSnackCount()
                             scheduleNextNotification(this)

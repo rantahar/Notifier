@@ -34,26 +34,31 @@ class HabitViewModel : ViewModel() {
     fun listenToTodaysLog() {
         getDocumentRef()?.addSnapshotListener { snapshot, error ->
             if (error != null) {
-                // Handle error - for now, just assume a new log
-                _habitLog.value = HabitLog()
+                // If the document doesn't exist, Firestore creates it on first write.
+                // We can start with a null or empty log.
+                _habitLog.value = null
                 return@addSnapshotListener
             }
-            _habitLog.value = snapshot?.toObject<HabitLog>() ?: HabitLog()
+            _habitLog.value = snapshot?.toObject<HabitLog>()
         }
     }
 
     fun incrementSnackCount() {
         viewModelScope.launch {
-            // Use FieldValue to atomically increment the count on the server
-            getDocumentRef()?.set(mapOf("snack" to FieldValue.increment(1)), com.google.firebase.firestore.SetOptions.merge())
+            // Construct a nested map to safely update the nested field.
+            // This is non-destructive and will not affect other fields in the 'habits' map.
+            val update = mapOf("habits" to mapOf("snack" to FieldValue.increment(1)))
+            getDocumentRef()?.set(update, com.google.firebase.firestore.SetOptions.merge())
         }
     }
 
     fun decrementSnackCount() {
         viewModelScope.launch {
-            val currentCount = _habitLog.value?.snack ?: 0
+            val currentCount = _habitLog.value?.habits?.snack ?: 0
             if (currentCount > 0) {
-                getDocumentRef()?.set(mapOf("snack" to FieldValue.increment(-1)), com.google.firebase.firestore.SetOptions.merge())
+                // Use the same non-destructive nested map approach here.
+                val update = mapOf("habits" to mapOf("snack" to FieldValue.increment(-1)))
+                getDocumentRef()?.set(update, com.google.firebase.firestore.SetOptions.merge())
             }
         }
     }
