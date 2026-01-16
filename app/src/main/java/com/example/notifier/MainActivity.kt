@@ -15,14 +15,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.activity.viewModels
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,31 +30,37 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.firebase.ui.auth.AuthUI
+import com.firebase.ui.auth.FirebaseAuthUIActivityResultContract
 import com.example.notifier.ui.theme.NotifierTheme
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
-    private var clickCount by mutableStateOf(0)
+    private val authViewModel: AuthViewModel by viewModels()
+    private val habitViewModel: HabitViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             NotifierTheme {
-                MainScreen(
-                    clickCount = clickCount,
-                    onIncrement = {
-                        // Immediately cancel the currently showing notification
-                        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                        notificationManager.cancel(NOTIFICATION_ID)
-                        // Then update the count and schedule the next one
-                        manualUpdateCount(1)
-                        scheduleNextNotification(this)
-                    },
-                    onDecrement = { manualUpdateCount(-1) }
-                )
+                val user by authViewModel.user.collectAsState()
+                val habitLog by habitViewModel.habitLog.collectAsState()
+
+                if (user == null) {
+                    SignInScreen()
+                } else {
+                    LaunchedEffect(user) {
+                        habitViewModel.listenToTodaysLog()
+                    }
+                    MainScreen(
+                        clickCount = habitLog?.snack ?: 0,
+                        onIncrement = {
+                            habitViewModel.incrementSnackCount()
+                            scheduleNextNotification(this)
+                        },
+                        onDecrement = { habitViewModel.decrementSnackCount() }
+                    )
+                }
             }
         }
     }
@@ -65,68 +68,33 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.action == NOTIFICATION_CLICK_ACTION) {
-            updateDailyClickCount()
+            habitViewModel.incrementSnackCount()
             scheduleNextNotification(this)
         }
     }
+}
 
-    override fun onResume() {
-        super.onResume()
-        updateClickCount()
-    }
+@Composable
+fun SignInScreen() {
+    val signInLauncher = rememberLauncherForActivityResult(
+        contract = FirebaseAuthUIActivityResultContract(),
+        onResult = { /* The AuthStateListener will handle the result */ }
+    )
 
-    private fun updateClickCount() {
-        val prefs = getSharedPreferences("NotifierPrefs", Context.MODE_PRIVATE)
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        val today = dateFormat.format(Date())
-        val lastClickDate = prefs.getString("lastClickDate", null)
+    val providers = arrayListOf(
+        AuthUI.IdpConfig.GoogleBuilder().build(),
+        AuthUI.IdpConfig.EmailBuilder().build(),
+    )
 
-        clickCount = if (today == lastClickDate) {
-            prefs.getInt("clickCount", 0)
-        } else {
-            0
+    val signInIntent = AuthUI.getInstance()
+        .createSignInIntentBuilder()
+        .setAvailableProviders(providers)
+        .build()
+
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Button(onClick = { signInLauncher.launch(signInIntent) }) {
+            Text("Sign In")
         }
-    }
-
-    private fun manualUpdateCount(delta: Int) {
-        val prefs = getSharedPreferences("NotifierPrefs", Context.MODE_PRIVATE)
-        val editor = prefs.edit()
-
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        val today = dateFormat.format(Date())
-
-        val lastClickDate = prefs.getString("lastClickDate", null)
-        if (today != lastClickDate) {
-            editor.putString("lastClickDate", today)
-        }
-
-        val currentClickCount = prefs.getInt("clickCount", 0)
-        val newCount = (currentClickCount + delta).coerceAtLeast(0)
-        editor.putInt("clickCount", newCount)
-        editor.apply()
-        updateClickCount()
-    }
-
-    private fun updateDailyClickCount() {
-        val prefs = getSharedPreferences("NotifierPrefs", Context.MODE_PRIVATE)
-        val editor = prefs.edit()
-
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        val today = dateFormat.format(Date())
-
-        val lastClickDate = prefs.getString("lastClickDate", null)
-        var currentClickCount = prefs.getInt("clickCount", 0)
-
-        if (today == lastClickDate) {
-            currentClickCount++
-        } else {
-            currentClickCount = 1
-        }
-
-        editor.putString("lastClickDate", today)
-        editor.putInt("clickCount", currentClickCount)
-        editor.apply()
-        updateClickCount()
     }
 }
 
@@ -144,7 +112,7 @@ fun MainScreen(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { /* The new DisposableEffect will handle re-checking on resume */ }
     )
-    
+
     fun checkPermissions() {
         // 1. Notification Permission (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
