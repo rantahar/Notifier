@@ -19,7 +19,6 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,6 +40,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Handle the notification click if the activity is created fresh.
+        handleNotificationClick(intent)
+
         setContent {
             NotifierTheme {
                 val user by authViewModel.user.collectAsState()
@@ -67,7 +70,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.action == NOTIFICATION_CLICK_ACTION) {
+        // Handle the notification click if the activity is already running.
+        handleNotificationClick(intent)
+    }
+
+    private fun handleNotificationClick(intent: Intent?) {
+        if (intent?.action == NOTIFICATION_CLICK_ACTION) {
             habitViewModel.incrementSnackCount()
             scheduleNextNotification(this)
         }
@@ -106,6 +114,7 @@ fun MainScreen(
 ) {
     val context = LocalContext.current
     var showAlarmPermissionRationale by remember { mutableStateOf(false) }
+    var showDndPermissionRationale by remember { mutableStateOf(false) }
     var showBatteryOptimizationRationale by remember { mutableStateOf(false) }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -114,7 +123,8 @@ fun MainScreen(
     )
 
     fun checkPermissions() {
-        // 1. Notification Permission (Android 13+)
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -122,7 +132,11 @@ fun MainScreen(
             }
         }
 
-        // 2. Exact Alarm Permission (Android 12+)
+        if (!notificationManager.isNotificationPolicyAccessGranted) {
+            showDndPermissionRationale = true
+            return
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             if (!alarmManager.canScheduleExactAlarms()) {
@@ -131,7 +145,6 @@ fun MainScreen(
             }
         }
 
-        // 3. Battery Optimization
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         if (!powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
             showBatteryOptimizationRationale = true
@@ -150,6 +163,19 @@ fun MainScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
+    }
+
+    if (showDndPermissionRationale) {
+        PermissionRationaleDialog(
+            title = "Permission Required",
+            text = "To ensure reminders can restart after \"Do Not Disturb\" mode, the app needs to know when DND is turned on or off. Please grant this permission in the upcoming settings screen.",
+            onConfirm = {
+                showDndPermissionRationale = false
+                val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+                context.startActivity(intent)
+            },
+            onDismiss = { showDndPermissionRationale = false }
+        )
     }
 
     if (showAlarmPermissionRationale) {
